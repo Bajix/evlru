@@ -130,11 +130,9 @@ where
 
   fn apply_pending_ops(&self, mut write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>) {
     let read_handle = write_handle.clone();
-    loop {
-      match self.pending_ops.pop() {
-        Some(op) => self.apply_op(op, &read_handle, &mut write_handle),
-        None => break,
-      };
+
+    while let Some(op) = self.pending_ops.pop() {
+      self.apply_op(op, &read_handle, &mut write_handle);
     }
   }
 
@@ -180,7 +178,8 @@ where
   }
 }
 
-/// An eventually consistent LRU designed for lock-free concurrent reads
+/// An eventually consistent LRU designed for lock-free concurrent reads. This is `!Sync` but can be cloned and used thread local
+#[derive(Clone)]
 pub struct EVLRU<K: Key, V: Value> {
   reader: ReadHandle<K, ValueBox<V>>,
   writer: Arc<EventualWriter<K, V>>,
@@ -249,7 +248,7 @@ where
     self.writer.pending_ops.push(EventualOp::PurgeCache);
   }
 
-  /// Block to acquire writer mutex and apply all pending changes. It is preferrable to use [`EVLRU::try_apply_blocking`] instead whenever possible because this usage only blocks to apply changes when necessary and otherwise delegates the responsibility to apply changes to the current lock holder.
+  /// Block to acquire write lock and apply all pending changes. It is preferrable to use [`EVLRU::try_apply_blocking`] or [`EVLRU::background_apply_changes`]instead whenever possible because this usage only blocks to apply changes when necessary and otherwise delegates the responsibility to apply changes to the current lock holder.
   pub fn apply_blocking(&self) {
     let mut write_handle = self.writer.write_handle.lock().unwrap();
     self.writer.apply_pending_ops(&mut write_handle);
@@ -269,18 +268,20 @@ where
     }
   }
 
-  /// Apply all pending changes in cycles using Tokio's blocking thread pool
+  /// Cooperatively apply pending changes in cycles using Tokio's blocking thread pool. Each cycle the responsibility is delegated via lock acquisition to apply pending ops and then to flush updates to readers and this repeats until it is guaranteed that no pending ops are left unprocessed.
   pub fn background_apply_changes(&self) {
     let writer = self.writer.clone();
 
     if !self.writer.is_pending_empty() {
       tokio::task::spawn(async move {
         tokio::task::spawn_blocking(move || {
+          // If there is already a lock holder the responsibility of handling pending ops is delegated
           while let Ok(mut write_handle) = writer.write_handle.try_lock() {
             writer.apply_pending_ops(&mut write_handle);
             write_handle.flush();
             drop(write_handle);
 
+            // This ensures there's exactly one writer driving all pending ops to completion and so that ops pushed while flushing are delegated and not left unprocessed
             if writer.pending_ops.is_empty() {
               break;
             }
