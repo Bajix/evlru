@@ -18,7 +18,7 @@ impl<T: Send + Sync + Clone + Eq + Hash + 'static> Value for T {}
 
 enum EventualOp<K: Key, V: Value> {
   SetValue(K, Arc<V>),
-  Extend(HashMap<K, Arc<V>>),
+  Extend(Box<HashMap<K, Arc<V>>>),
   InvalidateKey(K),
   GarbageCollect(K, Arc<AtomicCell<usize>>),
   PurgeCache,
@@ -147,7 +147,7 @@ where
     match op {
       EventualOp::SetValue(key, value) => self.set_value(key, value.into(), &mut write_handle),
       EventualOp::Extend(data) => {
-        for (key, value) in data {
+        for (key, value) in *data {
           self.set_value(key, value.into(), &mut write_handle);
         }
       }
@@ -219,8 +219,9 @@ where
   }
 
   /// Extend data on next apply cycle
-  pub fn extend(&self, data: HashMap<K, Arc<V>>) {
-    self.writer.pending_ops.push(EventualOp::Extend(data))
+  pub fn extend<T: IntoIterator<Item = (K, Arc<V>)>>(&self, data: T) {
+    let data: HashMap<K, Arc<V>> = HashMap::from_iter(data);
+    self.writer.pending_ops.push(EventualOp::Extend(Box::from(data)));
   }
 
   /// Mark key to be invalidated on next apply cycle
