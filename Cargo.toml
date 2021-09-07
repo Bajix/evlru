@@ -1,0 +1,16 @@
+[package]
+authors = ["Thomas Sieverding <Thomas@bajix.com>"]
+edition = "2021"
+name = "evlru"
+version = "0.0.1-beta.1"
+description = "An eventually consistent LRU designed for lock-free concurrent reads"
+readme = "./README.md"
+license = "MIT"
+repository = "https://github.com/Bajix/evlru/"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crossbeam = "0.8.1"
+evmap = "10.0.2"
