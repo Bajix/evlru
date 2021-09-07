@@ -210,6 +210,15 @@ where
     }
   }
 
+  /// Get current key value as applied without updating the LRU access log
+  pub fn peek(&self, key: K) -> Option<Arc<V>> {
+    if let Some(container) = self.reader.get_one(&key).map(|guard| guard.clone()) {
+      Some(container.value)
+    } else {
+      None
+    }
+  }
+
   /// Set value on next apply cycle
   pub fn set_value(&self, key: K, value: Arc<V>) {
     self
