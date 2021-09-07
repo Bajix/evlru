@@ -2,7 +2,7 @@
 authors = ["Thomas Sieverding <Thomas@bajix.com>"]
 edition = "2021"
 name = "evlru"
-version = "0.0.1-beta.1"
+version = "0.0.1-beta.3"
 description = "An eventually consistent LRU designed for lock-free concurrent reads"
 readme = "./README.md"
 license = "MIT"
@@ -14,3 +14,4 @@ repository = "https://github.com/Bajix/evlru/"
 [dependencies]
 crossbeam = "0.8.1"
 evmap = "10.0.2"
+tokio = { version = "1.11.0", features = ["rt"] }
