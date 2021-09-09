@@ -94,7 +94,7 @@ where
     })
   }
 
-  fn set_value(
+  fn set(
     &self,
     key: K,
     value: ValueBox<V>,
@@ -143,10 +143,10 @@ where
     mut write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>,
   ) {
     match op {
-      EventualOp::SetValue(key, value) => self.set_value(key, value.into(), &mut write_handle),
+      EventualOp::SetValue(key, value) => self.set(key, value.into(), &mut write_handle),
       EventualOp::Extend(data) => {
         for (key, value) in *data {
-          self.set_value(key, value.into(), &mut write_handle);
+          self.set(key, value.into(), &mut write_handle);
         }
       }
       EventualOp::InvalidateKey(key) => {
@@ -198,8 +198,8 @@ where
     EVLRU { reader, writer }
   }
 
-  /// Get current key value as applied and push a new key access counter to the LRU access log after incrementing. At capacity the last accessed entry is popped and should that be the last access counter for this key/value pair this will be marked for removal the next time changes are applied should no reads/write have since occured.
-  pub fn get_value(&self, key: K) -> Option<Arc<V>> {
+  /// Get current key value as applied and appends a new access counter to the access log. At capacity, the last used access counter is dropped and should that be the last access counter of it's key/value pair, this slow will be evicted during the next apply cycle should no reads/write occurr in the interim.
+  pub fn get(&self, key: K) -> Option<Arc<V>> {
     if let Some(container) = self.reader.get_one(&key).map(|guard| guard.clone()) {
       self.writer.push_access_entry(key, &container);
 
@@ -209,7 +209,7 @@ where
     }
   }
 
-  /// Get current key value as applied without updating the LRU access log
+  /// Get current key value as applied without updating the access log
   pub fn peek(&self, key: K) -> Option<Arc<V>> {
     if let Some(container) = self.reader.get_one(&key).map(|guard| guard.clone()) {
       Some(container.value)
@@ -218,8 +218,13 @@ where
     }
   }
 
+  /// Returns a bool indicating whether the given key is in the cache as currently applied and without updating the access log
+  pub fn contains(&self, key: &K) -> bool {
+    self.reader.contains_key(key)
+  }
+
   /// Set value on next apply cycle
-  pub fn set_value(&self, key: K, value: Arc<V>) {
+  pub fn set(&self, key: K, value: Arc<V>) {
     self
       .writer
       .pending_ops
