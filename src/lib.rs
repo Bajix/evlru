@@ -162,11 +162,7 @@ where
         }
       }
       EventualOp::PurgeCache => {
-        loop {
-          if self.access_log.pop().is_none() {
-            break;
-          }
-        }
+        while self.access_log.pop().is_some() {}
 
         write_handle.purge();
       }
@@ -247,12 +243,7 @@ where
 
   /// Clear pending operations and mark cache to be purged on next apply cycle
   pub fn purge(&self) {
-    loop {
-      if self.writer.pending_ops.pop().is_none() {
-        break;
-      }
-    }
-
+    while self.writer.pending_ops.pop().is_some() {}
     self.writer.pending_ops.push(EventualOp::PurgeCache);
   }
 
