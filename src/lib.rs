@@ -115,7 +115,7 @@ where
         Ok(()) => return,
         Err(entry) => {
           if let Some((key, lru_counter)) = self.access_log.pop() {
-            if (&*lru_counter).fetch_sub(1).eq(&0) {
+            if (&*lru_counter).fetch_sub(1).eq(&1) {
               self
                 .pending_ops
                 .push(EventualOp::GarbageCollect(key, lru_counter))
@@ -234,7 +234,10 @@ where
   /// Extend data on next apply cycle
   pub fn extend<T: IntoIterator<Item = (K, Arc<V>)>>(&self, data: T) {
     let data: HashMap<K, Arc<V>> = HashMap::from_iter(data);
-    self.writer.pending_ops.push(EventualOp::Extend(Box::from(data)));
+    self
+      .writer
+      .pending_ops
+      .push(EventualOp::Extend(Box::from(data)));
   }
 
   /// Mark key to be invalidated on next apply cycle
@@ -257,14 +260,14 @@ where
   pub fn apply_blocking(&self) {
     let mut write_handle = self.writer.write_handle.lock().unwrap();
     self.writer.apply_pending_ops(&mut write_handle);
-    write_handle.flush();
+    write_handle.refresh();
   }
 
   /// Delegate or directly apply all pending changes in cycles until no more pending ops are present or another writer lock holder takes over between cycles. The ensures all pending work is eventually processed either directly or indirectly and without blocking ever for lock acquisition.
   pub fn try_apply_blocking(&self) {
     while let Ok(mut write_handle) = self.writer.write_handle.try_lock() {
       self.writer.apply_pending_ops(&mut write_handle);
-      write_handle.flush();
+      write_handle.refresh();
       drop(write_handle);
 
       if self.writer.pending_ops.is_empty() {
@@ -283,7 +286,7 @@ where
           // If there is already a lock holder the responsibility of handling pending ops is delegated
           while let Ok(mut write_handle) = writer.write_handle.try_lock() {
             writer.apply_pending_ops(&mut write_handle);
-            write_handle.flush();
+            write_handle.refresh();
             drop(write_handle);
 
             // This ensures there's exactly one writer driving all pending ops to completion and so that ops pushed while flushing are delegated and not left unprocessed
@@ -296,5 +299,66 @@ where
         .unwrap();
       });
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use crate::EVLRU;
+
+  #[test]
+  fn it_expires_oldest() {
+    let cache: EVLRU<&'static str, &'static str> = EVLRU::new(2);
+
+    cache.set("apple", "red".into());
+    cache.set("banana", "yellow".into());
+
+    cache.apply_blocking();
+
+    assert!(cache.get("apple").is_some());
+    assert!(cache.get("banana").is_some());
+
+    cache.set("pear", "green".into());
+
+    cache.apply_blocking();
+
+    assert!(cache.get("pear").is_some());
+    assert!(cache.get("apple").is_none());
+  }
+
+  #[test]
+  fn it_purges() {
+    let cache: EVLRU<&'static str, &'static str> = EVLRU::new(2);
+
+    cache.set("apple", "red".into());
+    cache.set("banana", "yellow".into());
+
+    cache.apply_blocking();
+
+    assert!(cache.get("apple").is_some());
+    assert!(cache.get("banana").is_some());
+
+    cache.purge();
+    cache.apply_blocking();
+
+    assert!(cache.get("pear").is_none());
+    assert!(cache.get("apple").is_none());
+  }
+
+  #[test]
+  fn it_invalidates() {
+    let cache: EVLRU<&'static str, &'static str> = EVLRU::new(2);
+
+    cache.set("apple", "red".into());
+
+    cache.apply_blocking();
+
+    assert!(cache.get("apple").is_some());
+
+    cache.invalidate_key("apple");
+
+    cache.apply_blocking();
+
+    assert!(cache.get("apple").is_none());
   }
 }
