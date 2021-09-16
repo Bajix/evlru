@@ -228,8 +228,9 @@ where
   }
 
   /// Extend data on next apply cycle
-  pub fn extend<T: IntoIterator<Item = (K, Arc<V>)>>(&self, data: T) {
-    let data: HashMap<K, Arc<V>> = HashMap::from_iter(data);
+  pub fn extend<I: IntoIterator<Item = (K, Arc<V>)>>(&self, iter: I) {
+    let data: HashMap<K, Arc<V>> = HashMap::from_iter(iter);
+
     self
       .writer
       .pending_ops
@@ -271,23 +272,19 @@ where
   pub fn background_apply_changes(&self) {
     let writer = self.writer.clone();
 
-    if !self.writer.is_pending_empty() {
-      tokio::task::spawn(async move {
-        tokio::task::spawn_blocking(move || {
-          // If there is already a lock holder the responsibility of handling pending ops is delegated
-          while let Ok(mut write_handle) = writer.write_handle.try_lock() {
-            writer.apply_pending_ops(&mut write_handle);
-            write_handle.refresh();
-            drop(write_handle);
+    if !writer.is_pending_empty() {
+      rayon::spawn(move || {
+        // If there is already a lock holder the responsibility of handling pending ops is delegated
+        while let Ok(mut write_handle) = writer.write_handle.try_lock() {
+          writer.apply_pending_ops(&mut write_handle);
+          write_handle.refresh();
+          drop(write_handle);
 
-            // This ensures there's exactly one writer driving all pending ops to completion and so that ops pushed while flushing are delegated and not left unprocessed
-            if writer.pending_ops.is_empty() {
-              break;
-            }
+          // This ensures there's exactly one writer driving all pending ops to completion and so that ops pushed while flushing are delegated and not left unprocessed
+          if writer.pending_ops.is_empty() {
+            break;
           }
-        })
-        .await
-        .unwrap();
+        }
       });
     }
   }
