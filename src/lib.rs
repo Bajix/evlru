@@ -18,7 +18,7 @@ impl<T: Send + Sync + Clone + Eq + Hash + 'static> Value for T {}
 
 enum EventualOp<K: Key, V: Value> {
   SetValue(K, Arc<V>),
-  Extend(Box<HashMap<K, Arc<V>>>),
+  Extend(HashMap<K, Arc<V>>),
   InvalidateKey(K),
   GarbageCollect(K, Arc<AtomicCell<usize>>),
   PurgeCache,
@@ -74,6 +74,7 @@ where
 struct EventualWriter<K: Key, V: Value> {
   write_handle: Mutex<WriteHandle<K, ValueBox<V>>>,
   access_log: ArrayQueue<(K, Arc<AtomicCell<usize>>)>,
+  recycling_bin: ArrayQueue<(K, Arc<AtomicCell<usize>>)>,
   pending_ops: SegQueue<EventualOp<K, V>>,
 }
 
@@ -85,11 +86,13 @@ where
   fn new(write_handle: WriteHandle<K, ValueBox<V>>, capacity: usize) -> Arc<Self> {
     let write_handle = Mutex::from(write_handle);
     let access_log = ArrayQueue::new(capacity);
+    let recycling_bin = ArrayQueue::new(capacity);
     let pending_ops = SegQueue::new();
 
     Arc::new(EventualWriter {
       write_handle,
       access_log,
+      recycling_bin,
       pending_ops,
     })
   }
@@ -114,11 +117,9 @@ where
       entry = match self.access_log.push(entry) {
         Ok(()) => return,
         Err(entry) => {
-          if let Some((key, lru_counter)) = self.access_log.pop() {
-            if (&*lru_counter).fetch_sub(1).eq(&1) {
-              self
-                .pending_ops
-                .push(EventualOp::GarbageCollect(key, lru_counter))
+          if let Some(entry) = self.access_log.pop() {
+            if (&*entry.1).fetch_sub(1).eq(&1) {
+              self.push_recycling_bin(entry);
             }
           }
 
@@ -128,11 +129,31 @@ where
     }
   }
 
-  fn apply_pending_ops(&self, mut write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>) {
+  fn push_recycling_bin(&self, mut entry: (K, Arc<AtomicCell<usize>>)) {
+    loop {
+      entry = match self.recycling_bin.push(entry) {
+        Ok(()) => return,
+
+        Err(entry) => {
+          if let Some((key, lru_counter)) = self.recycling_bin.pop() {
+            if lru_counter.as_ref().load().eq(&0) {
+              self
+                .pending_ops
+                .push(EventualOp::GarbageCollect(key, lru_counter));
+            }
+          }
+
+          entry
+        }
+      }
+    }
+  }
+
+  fn apply_pending_ops(&self, write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>) {
     let read_handle = write_handle.clone();
 
     while let Some(op) = self.pending_ops.pop() {
-      self.apply_op(op, &read_handle, &mut write_handle);
+      self.apply_op(op, &read_handle, write_handle);
     }
   }
 
@@ -140,13 +161,13 @@ where
     &self,
     op: EventualOp<K, V>,
     read_handle: &ReadHandle<K, ValueBox<V>>,
-    mut write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>,
+    write_handle: &mut MutexGuard<WriteHandle<K, ValueBox<V>>>,
   ) {
     match op {
-      EventualOp::SetValue(key, value) => self.set(key, value.into(), &mut write_handle),
+      EventualOp::SetValue(key, value) => self.set(key, value.into(), write_handle),
       EventualOp::Extend(data) => {
-        for (key, value) in *data {
-          self.set(key, value.into(), &mut write_handle);
+        for (key, value) in data {
+          self.set(key, value.into(), write_handle);
         }
       }
       EventualOp::InvalidateKey(key) => {
@@ -186,10 +207,10 @@ where
   K: Key,
   V: Value,
 {
-  /// Create a new ELVRU instance with bounded access log capacity
-  pub fn new(capacity: usize) -> Self {
+  /// Create a new ELVRU instance with a flex-capacity.
+  pub fn new(flex_capacity: usize) -> Self {
     let (reader, write_handle) = evmap::new();
-    let writer = EventualWriter::new(write_handle, capacity);
+    let writer = EventualWriter::new(write_handle, flex_capacity);
 
     EVLRU { reader, writer }
   }
@@ -231,10 +252,7 @@ where
   pub fn extend<I: IntoIterator<Item = (K, Arc<V>)>>(&self, iter: I) {
     let data: HashMap<K, Arc<V>> = HashMap::from_iter(iter);
 
-    self
-      .writer
-      .pending_ops
-      .push(EventualOp::Extend(Box::from(data)));
+    self.writer.pending_ops.push(EventualOp::Extend(data));
   }
 
   /// Mark key to be invalidated on next apply cycle
@@ -307,9 +325,12 @@ mod tests {
     assert!(cache.get("banana").is_some());
 
     cache.set("pear", "green".into());
+    cache.set("peach", "orange".into());
+    cache.set("coconut", "brown".into());
 
     cache.apply_blocking();
 
+    assert!(cache.get("banana").is_some());
     assert!(cache.get("pear").is_some());
     assert!(cache.get("apple").is_none());
   }
