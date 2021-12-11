@@ -2,7 +2,7 @@
 authors = ["Thomas Sieverding <Thomas@bajix.com>"]
 edition = "2021"
 name = "evlru"
-version = "0.0.2"
+version = "0.1.0"
 description = "An eventually consistent LRU designed for lock-free concurrent reads"
 readme = "./README.md"
 license = "MIT"

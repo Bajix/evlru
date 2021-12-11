@@ -266,15 +266,15 @@ where
     self.writer.pending_ops.push(EventualOp::PurgeCache);
   }
 
-  /// Block to acquire write lock and apply all pending changes. It is preferrable to use [`EVLRU::try_apply_blocking`] or [`EVLRU::background_apply_changes`]instead whenever possible because this usage only blocks to apply changes when necessary and otherwise delegates the responsibility to apply changes to the current lock holder.
+  /// Block to acquire write lock and apply all pending changes. It is preferrable to use [`EVLRU::apply_cooperatively`] or [`EVLRU::background_apply_changes`]instead whenever possible because this usage only blocks to apply changes when necessary and otherwise delegates the responsibility to apply changes to the current lock holder.
   pub fn apply_blocking(&self) {
     let mut write_handle = self.writer.write_handle.lock().unwrap();
     self.writer.apply_pending_ops(&mut write_handle);
     write_handle.refresh();
   }
 
-  /// Delegate or directly apply all pending changes in cycles until no more pending ops are present or another writer lock holder takes over between cycles. The ensures all pending work is eventually processed either directly or indirectly and without blocking ever for lock acquisition.
-  pub fn try_apply_blocking(&self) {
+  /// Cooperatively apply pending changes in cycles pending changes in cycles until no more pending ops are present or another writer lock holder takes over between cycles. The ensures all pending work is eventually processed either directly or indirectly and without blocking ever for lock acquisition.
+  pub fn apply_cooperatively(&self) {
     while let Ok(mut write_handle) = self.writer.write_handle.try_lock() {
       self.writer.apply_pending_ops(&mut write_handle);
       write_handle.refresh();
@@ -286,7 +286,7 @@ where
     }
   }
 
-  /// Cooperatively apply pending changes in cycles using Tokio's blocking thread pool. Each cycle the responsibility is delegated via lock acquisition to apply pending ops and then to flush updates to readers and this repeats until it is guaranteed that no pending ops are left unprocessed.
+  /// Cooperatively apply pending changes in cycles using rayons's thread pool. Each cycle the responsibility is delegated via lock acquisition to apply pending ops and then to flush updates to readers and this repeats until it is guaranteed that no pending ops are left unprocessed.
   pub fn background_apply_changes(&self) {
     let writer = self.writer.clone();
 
